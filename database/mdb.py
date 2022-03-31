@@ -1,186 +1,133 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# @trojanzhex
-
-
-import re
 import pymongo
 
-from pymongo.errors import DuplicateKeyError
-from marshmallow.exceptions import ValidationError
+from info import DATABASE_URI, DATABASE_NAME
 
-from config import DATABASE_URI, DATABASE_NAME
-
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)
 
 myclient = pymongo.MongoClient(DATABASE_URI)
 mydb = myclient[DATABASE_NAME]
+mycol = mydb['CONNECTION']   
 
 
+async def add_connection(group_id, user_id):
+    query = mycol.find_one(
+        { "_id": user_id },
+        { "_id": 0, "active_group": 0 }
+    )
+    if query is not None:
+        group_ids = [x["group_id"] for x in query["group_details"]]
+        if group_id in group_ids:
+            return False
 
-async def savefiles(docs, group_id):
-    mycol = mydb[str(group_id)]
-    
-    try:
-        mycol.insert_many(docs, ordered=False)
-    except Exception:
-        pass
-
-
-async def channelgroup(channel_id, channel_name, group_id, group_name):
-    mycol = mydb["ALL DETAILS"]
-
-    channel_details = {
-        "channel_id" : channel_id,
-        "channel_name" : channel_name
+    group_details = {
+        "group_id" : group_id
     }
 
     data = {
-        '_id': group_id,
-        'group_name' : group_name,
-        'channel_details' : [channel_details],
+        '_id': user_id,
+        'group_details' : [group_details],
+        'active_group' : group_id,
     }
-    
-    if mycol.count_documents( {"_id": group_id} ) == 0:
+
+    if mycol.count_documents( {"_id": user_id} ) == 0:
         try:
             mycol.insert_one(data)
+            return True
         except:
-            print('Some error occured!')
-        else:
-            print(f"files in '{channel_name}' linked to '{group_name}' ")
+            logger.exception('Some error occurred!', exc_info=True)
+
     else:
         try:
-            mycol.update_one({'_id': group_id},  {"$push": {"channel_details": channel_details}})
-        except:
-            print('Some error occured!')
-        else:
-            print(f"files in '{channel_name}' linked to '{group_name}' ")
-
-
-async def ifexists(channel_id, group_id):
-    mycol = mydb["ALL DETAILS"]
-
-    query = mycol.count_documents( {"_id": group_id} )
-    if query == 0:
-        return False
-    else:
-        ids = mycol.find( {'_id': group_id} )
-        channelids = []
-        for id in ids:
-            for chid in id['channel_details']:
-                channelids.append(chid['channel_id'])
-
-        if channel_id in channelids:
+            mycol.update_one(
+                {'_id': user_id},
+                {
+                    "$push": {"group_details": group_details},
+                    "$set": {"active_group" : group_id}
+                }
+            )
             return True
-        else:
-            return False
-
-
-async def deletefiles(channel_id, channel_name, group_id, group_name):
-    mycol1 = mydb["ALL DETAILS"]
-
-    try:
-        mycol1.update_one(
-            {"_id": group_id},
-            {"$pull" : { "channel_details" : {"channel_id":channel_id} } }
-        )
-    except:
-        pass
-
-    mycol2 = mydb[str(group_id)]
-    query2 = {'channel_id' : channel_id}
-    try:
-        mycol2.delete_many(query2)
-    except:
-        print("Couldn't delete channel")
-        return False
-    else:
-        print(f"filters from '{channel_name}' deleted in '{group_name}'")
-        return True
-
-
-async def deletealldetails(group_id):
-    mycol = mydb["ALL DETAILS"]
-
-    query = { "_id": group_id }
-    try:
-        mycol.delete_one(query)
-    except:
-        pass
-
-
-async def deletegroupcol(group_id):
-    mycol = mydb[str(group_id)]
-
-    if mycol.count() == 0:
-        return 1
-
-    try:    
-        mycol.drop()
-    except Exception as e:
-        print(f"delall group col drop error - {str(e)}")
-        return 2
-    else:
-        return 0
-
-
-async def channeldetails(group_id):
-    mycol = mydb["ALL DETAILS"]
-
-    query = mycol.count_documents( {"_id": group_id} )
-    if query == 0:
-        return False
-    else:
-        ids = mycol.find( {'_id': group_id} )
-        chdetails = []
-        for id in ids:
-            for chid in id['channel_details']:
-                chdetails.append(
-                    str(chid['channel_name']) + " ( <code>" + str(chid['channel_id']) + "</code> )"
-                )
-            return chdetails
-
-
-async def countfilters(group_id):
-    mycol = mydb[str(group_id)]
-
-    query = mycol.count()
-
-    if query == 0:
-        return False
-    else:
-        return query
+        except:
+            logger.exception('Some error occurred!', exc_info=True)
 
         
-async def findgroupid(channel_id):
-    mycol = mydb["ALL DETAILS"]
+async def active_connection(user_id):
 
-    ids = mycol.find()
-    groupids = []
-    for id in ids:
-        for chid in id['channel_details']:
-            if channel_id == chid['channel_id']:
-                groupids.append(id['_id'])
-    return groupids
+    query = mycol.find_one(
+        { "_id": user_id },
+        { "_id": 0, "group_details": 0 }
+    )
+    if not query:
+        return None
+
+    group_id = query['active_group']
+    return int(group_id) if group_id != None else None
 
 
-async def searchquery(group_id, name):
+async def all_connections(user_id):
+    query = mycol.find_one(
+        { "_id": user_id },
+        { "_id": 0, "active_group": 0 }
+    )
+    if query is not None:
+        return [x["group_id"] for x in query["group_details"]]
+    else:
+        return None
 
-    mycol = mydb[str(group_id)]
 
-    filenames = []
-    filelinks = []
+async def if_active(user_id, group_id):
+    query = mycol.find_one(
+        { "_id": user_id },
+        { "_id": 0, "group_details": 0 }
+    )
+    return query is not None and query['active_group'] == group_id
 
-    # looking for a better regex :(
-    pattern = name.lower().strip().replace(' ','.*')
-    raw_pattern = r"\b{}\b".format(pattern)
-    regex = re.compile(raw_pattern, flags=re.IGNORECASE)
 
-    query = mycol.find( {"file_name": regex} )
-    for file in query:
-        filename = "[" + str(file['file_size']//1048576) + "MB] " + file['file_name']
-        filenames.append(filename)
-        filelink = file['link']
-        filelinks.append(filelink)
-    return filenames, filelinks
+async def make_active(user_id, group_id):
+    update = mycol.update_one(
+        {'_id': user_id},
+        {"$set": {"active_group" : group_id}}
+    )
+    return update.modified_count != 0
 
+
+async def make_inactive(user_id):
+    update = mycol.update_one(
+        {'_id': user_id},
+        {"$set": {"active_group" : None}}
+    )
+    return update.modified_count != 0
+
+
+async def delete_connection(user_id, group_id):
+
+    try:
+        update = mycol.update_one(
+            {"_id": user_id},
+            {"$pull" : { "group_details" : {"group_id":group_id} } }
+        )
+        if update.modified_count == 0:
+            return False
+        query = mycol.find_one(
+            { "_id": user_id },
+            { "_id": 0 }
+        )
+        if len(query["group_details"]) >= 1:
+            if query['active_group'] == group_id:
+                prvs_group_id = query["group_details"][len(query["group_details"]) - 1]["group_id"]
+
+                mycol.update_one(
+                    {'_id': user_id},
+                    {"$set": {"active_group" : prvs_group_id}}
+                )
+        else:
+            mycol.update_one(
+                {'_id': user_id},
+                {"$set": {"active_group" : None}}
+            )
+        return True
+    except Exception as e:
+        logger.exception(f'Some error occurred! {e}', exc_info=True)
+        return False
 
